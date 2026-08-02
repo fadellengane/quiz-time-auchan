@@ -1,0 +1,163 @@
+// Schéma de base de données - Quiz Time Auchan
+//
+// Architecture pensée pour évoluer vers le multi-magasin et le multi-quiz :
+// - Store est déjà une entité à part entière (même si un seul magasin est utilisé au départ)
+// - Quiz est rattaché à un Store, ce qui permettra plusieurs quiz simultanés
+// - Participation garde une référence brute aux infos client (formulaire) ET une
+//   relation optionnelle vers un futur "compte fidélité Auchan" (loyaltyAccountId),
+//   prête pour une intégration API sans migration de rupture.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Magasin Auchan. Permet à terme un QR Code + un dashboard par magasin.
+model Store {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  city      String?
+  address   String?
+  googleReviewUrl String   // Lien vers la fiche Google (avis) du magasin
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quizzes        Quiz[]
+  participations Participation[]
+
+  @@map("stores")
+}
+
+/// Compte administrateur (community manager, gérant de magasin...)
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(EDITOR)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("users")
+}
+
+enum Role {
+  SUPER_ADMIN
+  EDITOR
+}
+
+/// Un "Quiz" représente une période (ex: une semaine). Il peut contenir
+/// plusieurs questions pour préparer le multi-question / multi-quiz simultané,
+/// même si le parcours actuel n'en affiche qu'une seule à la fois.
+model Quiz {
+  id        String     @id @default(cuid())
+  title     String
+  isActive  Boolean    @default(false)
+  startDate DateTime   @default(now())
+  endDate   DateTime?
+  reward    String     @default("10€ crédités sur votre carte Auchan")
+
+  storeId   String?
+  store     Store?     @relation(fields: [storeId], references: [id])
+
+  questions      Question[]
+  participations Participation[]
+  winners        Winner[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("quizzes")
+}
+
+/// Question du quiz, avec ses choix stockés en JSON pour rester flexible
+/// (nombre de réponses variable) tout en gardant un schéma simple.
+model Question {
+  id            String   @id @default(cuid())
+  quizId        String
+  quiz          Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  label         String
+  choices       Json     // ex: [{ "id": "a", "label": "2 %" }, { "id": "b", "label": "5 %" }]
+  correctChoiceId String
+  order         Int      @default(0)
+
+  participations Participation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("questions")
+}
+
+/// Une participation = un passage complet du parcours par un client.
+model Participation {
+  id            String   @id @default(cuid())
+
+  quizId        String
+  quiz          Quiz     @relation(fields: [quizId], references: [id])
+
+  questionId    String
+  question      Question @relation(fields: [questionId], references: [id])
+
+  storeId       String?
+  store         Store?   @relation(fields: [storeId], references: [id])
+
+  // --- Identité du client (saisie manuelle aujourd'hui) ---
+  firstName     String
+  lastName      String
+  phone         String
+  cardNumber    String
+
+  // Prêt pour une future connexion au compte fidélité Auchan :
+  // si renseigné, les champs ci-dessus pourront être pré-remplis / synchronisés
+  // automatiquement au lieu d'être saisis manuellement.
+  loyaltyAccountId String?
+
+  // --- Réponse au quiz ---
+  selectedChoiceId String
+  isCorrect        Boolean
+
+  // --- Satisfaction / avis Google ---
+  rating            Int      // 1 à 5
+  redirectedToGoogle Boolean @default(false)
+
+  // --- Tirage au sort ---
+  isWinner          Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([quizId])
+  @@index([phone])
+  @@index([cardNumber])
+  @@map("participations")
+}
+
+/// Un scan = un chargement de la page d'atterrissage (avant toute action).
+/// Permet de calculer le taux de conversion scans -> participations.
+model Scan {
+  id        String   @id @default(cuid())
+  quizId    String?
+  storeId   String?
+  createdAt DateTime @default(now())
+
+  @@map("scans")
+}
+
+/// Historique des gagnants tirés au sort.
+model Winner {
+  id              String   @id @default(cuid())
+  quizId          String
+  quiz            Quiz     @relation(fields: [quizId], references: [id])
+  participationId String   @unique
+  drawnAt         DateTime @default(now())
+  notified        Boolean  @default(false)
+
+  @@map("winners")
+}
